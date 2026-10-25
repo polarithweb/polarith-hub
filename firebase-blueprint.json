@@ -1,0 +1,315 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator registry record for RBAC verification.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified administrator email address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin record was created."
+        }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Authenticated user login profile and device telemetry visible to the user and administrator.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User Gmail address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User full display name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User profile avatar URL.",
+          "minLength": 0,
+          "maxLength": 1024
+        },
+        "deviceInfo": {
+          "type": "string",
+          "description": "Browser platform and viewport summary captured upon sign-in.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of most recent sign-in."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial sign-in."
+        }
+      },
+      "required": ["uid", "email", "displayName", "photoURL", "deviceInfo", "lastLoginAt", "createdAt"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "Editorial blog, vlog, or news article published from the hidden admin portal.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Headline of the blog or vlog post.",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "category": {
+          "type": "string",
+          "description": "Section category identifier.",
+          "enum": ["vlog", "ai-news", "wb-board", "motor-news", "national-news"]
+        },
+        "summary": {
+          "type": "string",
+          "description": "Short editorial deck or summary.",
+          "minLength": 10,
+          "maxLength": 600
+        },
+        "content": {
+          "type": "string",
+          "description": "Full article prose body.",
+          "minLength": 20,
+          "maxLength": 25000
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Optional image URL or data URI.",
+          "minLength": 0,
+          "maxLength": 350000
+        },
+        "videoUrl": {
+          "type": "string",
+          "description": "Optional YouTube video link for vlogs or WB Board lectures.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Display name of the author.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "authorId": {
+          "type": "string",
+          "description": "UID of the admin author.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "readTime": {
+          "type": "string",
+          "description": "Estimated reading or viewing duration.",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when post was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when post was last updated."
+        }
+      },
+      "required": ["title", "category", "summary", "content", "imageUrl", "videoUrl", "authorName", "authorId", "readTime", "createdAt", "updatedAt"]
+    },
+    "CinemaChat": {
+      "title": "CinemaChat",
+      "description": "1-on-1 Cinema Machine thread between a specific user and the administrator.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the user who owns this thread.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the user.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "userEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address of the user.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "lastMessage": {
+          "type": "string",
+          "description": "Preview of the most recent message in the thread.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when thread started."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest message."
+        }
+      },
+      "required": ["userId", "userName", "userEmail", "lastMessage", "createdAt", "updatedAt"]
+    },
+    "CinemaMessage": {
+      "title": "CinemaMessage",
+      "description": "Individual message inside a user's Cinema Machine chat thread.",
+      "type": "object",
+      "properties": {
+        "chatOwnerId": {
+          "type": "string",
+          "description": "UID of the thread owner for O(1) list rule validation.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderId": {
+          "type": "string",
+          "description": "UID of the message sender.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of the sender.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "senderRole": {
+          "type": "string",
+          "description": "Role of sender (user or admin).",
+          "enum": ["user", "admin"]
+        },
+        "text": {
+          "type": "string",
+          "description": "Message body or movie request text.",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "movieTitle": {
+          "type": "string",
+          "description": "Optional requested or shared movie title.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "movieLink": {
+          "type": "string",
+          "description": "Optional movie link provided by admin.",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when message was sent."
+        }
+      },
+      "required": ["chatOwnerId", "senderId", "senderName", "senderRole", "text", "movieTitle", "movieLink", "createdAt"]
+    },
+    "UserNote": {
+      "title": "UserNote",
+      "description": "Personal study note created in the YouTube Video Note Taker.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the note owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "videoUrl": {
+          "type": "string",
+          "description": "YouTube video URL associated with the note.",
+          "minLength": 5,
+          "maxLength": 500
+        },
+        "videoTitle": {
+          "type": "string",
+          "description": "Title or label for the study session.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "content": {
+          "type": "string",
+          "description": "Markdown or structured text study notes.",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when note was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when note was updated."
+        }
+      },
+      "required": ["userId", "videoUrl", "videoTitle", "content", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Admin lookup table."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Registered Gmail users and device login telemetry."
+    },
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/Post" },
+      "description": "Published vlogs, blogs, and category news articles."
+    },
+    "/cinemaChats/{chatId}": {
+      "schema": { "$ref": "#/entities/CinemaChat" },
+      "description": "1-on-1 Cinema Machine chat metadata keyed by userId."
+    },
+    "/cinemaChats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/CinemaMessage" },
+      "description": "Messages inside a user's Cinema Machine chat."
+    },
+    "/userNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/UserNote" },
+      "description": "Private YouTube Video Note Taker documents."
+    }
+  }
+}

@@ -1,0 +1,197 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Hardened Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    // Zero-lookup admin check safe for list queries (Pillar 8 Cost-Optimization Clause)
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'priyam.dgp13@gmail.com';
+    }
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity Validation Blueprints
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.photoURL is string && data.photoURL.size() >= 0 && data.photoURL.size() <= 1024 &&
+        data.deviceInfo is string && data.deviceInfo.size() >= 1 && data.deviceInfo.size() <= 300 &&
+        data.lastLoginAt is timestamp &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['title', 'category', 'summary', 'content', 'imageUrl', 'videoUrl', 'authorName', 'authorId', 'readTime', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'category', 'summary', 'content', 'imageUrl', 'videoUrl', 'authorName', 'authorId', 'readTime', 'createdAt', 'updatedAt']) &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 200 &&
+        data.category is string && data.category in ['vlog', 'ai-news', 'wb-board', 'motor-news', 'national-news'] &&
+        data.summary is string && data.summary.size() >= 10 && data.summary.size() <= 600 &&
+        data.content is string && data.content.size() >= 20 && data.content.size() <= 25000 &&
+        data.imageUrl is string && data.imageUrl.size() >= 0 && data.imageUrl.size() <= 350000 &&
+        data.videoUrl is string && data.videoUrl.size() >= 0 && data.videoUrl.size() <= 500 &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.authorId == request.auth.uid &&
+        data.readTime is string && data.readTime.size() >= 2 && data.readTime.size() <= 40 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCinemaChat(data) {
+      return data.keys().hasAll(['userId', 'userName', 'userEmail', 'lastMessage', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'userName', 'userEmail', 'lastMessage', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120 &&
+        data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 254 &&
+        data.lastMessage is string && data.lastMessage.size() >= 1 && data.lastMessage.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCinemaMessage(data) {
+      return data.keys().hasAll(['chatOwnerId', 'senderId', 'senderName', 'senderRole', 'text', 'movieTitle', 'movieLink', 'createdAt']) &&
+        data.keys().hasOnly(['chatOwnerId', 'senderId', 'senderName', 'senderRole', 'text', 'movieTitle', 'movieLink', 'createdAt']) &&
+        data.chatOwnerId is string && data.chatOwnerId.size() >= 1 && data.chatOwnerId.size() <= 128 && data.chatOwnerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 && data.senderId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.senderId == request.auth.uid &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120 &&
+        data.senderRole is string && data.senderRole in ['user', 'admin'] &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 1500 &&
+        data.movieTitle is string && data.movieTitle.size() >= 0 && data.movieTitle.size() <= 200 &&
+        data.movieLink is string && data.movieLink.size() >= 0 && data.movieLink.size() <= 1000 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserNote(data) {
+      return data.keys().hasAll(['userId', 'videoUrl', 'videoTitle', 'content', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'videoUrl', 'videoTitle', 'content', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId == request.auth.uid &&
+        data.videoUrl is string && data.videoUrl.size() >= 5 && data.videoUrl.size() <= 500 &&
+        data.videoTitle is string && data.videoTitle.size() >= 1 && data.videoTitle.size() <= 200 &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 20000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 1. Admins Registry
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // 2. Users Collection (PII Protected)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId &&
+        isValidUser(incoming()) &&
+        incoming().uid == userId &&
+        incoming().lastLoginAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && isValidUser(incoming()) && (
+        (request.auth.uid == userId &&
+          incoming().uid == existing().uid &&
+          incoming().lastLoginAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt', 'email'])) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 3. Editorial Posts Collection
+    match /posts/{postId} {
+      allow get: if isValidId(postId);
+      allow list: if isBootstrappedAdmin() || (
+        resource.data.category in ['vlog', 'ai-news', 'wb-board', 'motor-news', 'national-news']
+      );
+      allow create: if isAdmin() && isValidId(postId) && isValidPost(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(postId) && isValidPost(incoming()) &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'summary', 'content', 'imageUrl', 'videoUrl', 'readTime', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(postId);
+    }
+
+    // 4. Cinema Machine 1-on-1 Chat Threads
+    match /cinemaChats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && (request.auth.uid == chatId || isAdmin());
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(chatId) && (request.auth.uid == chatId || isAdmin()) &&
+        isValidCinemaChat(incoming()) &&
+        incoming().userId == chatId &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(chatId) && isValidCinemaChat(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().updatedAt == request.time && (
+          ((request.auth.uid == chatId || isAdmin()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'updatedAt', 'createdAt', 'userName', 'userEmail'])) ||
+          isAdmin()
+        );
+      allow delete: if isAdmin() && isValidId(chatId);
+
+      // 5. Cinema Machine Messages Subcollection
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
+          (request.auth.uid == chatId || isAdmin()) &&
+          exists(/databases/$(database)/documents/cinemaChats/$(chatId));
+        allow list: if isSignedIn() && isValidId(chatId) &&
+          (isBootstrappedAdmin() || request.auth.uid == chatId || resource.data.chatOwnerId == request.auth.uid);
+        allow create: if isVerified() && isValidId(chatId) && isValidId(messageId) &&
+          (request.auth.uid == chatId || isAdmin()) &&
+          isValidCinemaMessage(incoming()) &&
+          incoming().chatOwnerId == chatId &&
+          incoming().createdAt == request.time &&
+          ((request.auth.uid == chatId && incoming().senderRole == 'user') ||
+           (isAdmin() && incoming().senderRole == 'admin')) &&
+          exists(/databases/$(database)/documents/cinemaChats/$(chatId));
+        allow update: if false;
+        allow delete: if isAdmin() && isValidId(chatId) && isValidId(messageId);
+      }
+    }
+
+    // 6. Private YouTube Video Study Notes
+    match /userNotes/{noteId} {
+      allow get: if isSignedIn() && isValidId(noteId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(noteId) && isValidUserNote(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(noteId) && isValidUserNote(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['videoUrl', 'videoTitle', 'content', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(noteId) && resource.data.userId == request.auth.uid;
+    }
+  }
+}

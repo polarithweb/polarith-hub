@@ -1,0 +1,6 @@
+{
+  "name": "Polarith Studio — Vlogs, News & Creator Suite",
+  "description": "Minimalist vlogging, curated AI, Motor & National news, WB Board academic video hub, Cinema Machine, YouTube studio tools, and precision calculators by Priyam Kesh (Polarith Softwares).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
