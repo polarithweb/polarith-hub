@@ -51,6 +51,13 @@
           "minLength": 0,
           "maxLength": 1024
         },
+        "whatsappNumber": {
+          "type": "string",
+          "description": "User verified WhatsApp phone number captured at initial Gmail sign-in.",
+          "minLength": 7,
+          "maxLength": 20,
+          "pattern": "^\\+?[0-9]{7,15}$"
+        },
         "deviceInfo": {
           "type": "string",
           "description": "Browser platform and viewport summary captured upon sign-in.",
@@ -68,7 +75,7 @@
           "description": "Server timestamp of initial sign-in."
         }
       },
-      "required": ["uid", "email", "displayName", "photoURL", "deviceInfo", "lastLoginAt", "createdAt"]
+      "required": ["uid", "email", "displayName", "photoURL", "whatsappNumber", "deviceInfo", "lastLoginAt", "createdAt"]
     },
     "Post": {
       "title": "Post",

@@ -34,12 +34,14 @@ service cloud.firestore {
 
     // Entity Validation Blueprints
     function isValidUser(data) {
-      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
-        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL', 'whatsappNumber', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'whatsappNumber', 'deviceInfo', 'lastLoginAt', 'createdAt']) &&
         data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
         data.photoURL is string && data.photoURL.size() >= 0 && data.photoURL.size() <= 1024 &&
+        (data.photoURL.size() == 0 || data.photoURL.matches('^https?://.*')) &&
+        data.whatsappNumber is string && data.whatsappNumber.size() >= 7 && data.whatsappNumber.size() <= 20 && data.whatsappNumber.matches('^\\+?[0-9]{7,15}$') &&
         data.deviceInfo is string && data.deviceInfo.size() >= 1 && data.deviceInfo.size() <= 300 &&
         data.lastLoginAt is timestamp &&
         data.createdAt is timestamp;
@@ -53,7 +55,9 @@ service cloud.firestore {
         data.summary is string && data.summary.size() >= 10 && data.summary.size() <= 600 &&
         data.content is string && data.content.size() >= 20 && data.content.size() <= 25000 &&
         data.imageUrl is string && data.imageUrl.size() >= 0 && data.imageUrl.size() <= 350000 &&
+        (data.imageUrl.size() == 0 || data.imageUrl.matches('^(https?://|data:image/).*')) &&
         data.videoUrl is string && data.videoUrl.size() >= 0 && data.videoUrl.size() <= 500 &&
+        (data.videoUrl.size() == 0 || data.videoUrl.matches('^https?://.*') || data.videoUrl.matches('^[a-zA-Z0-9_\\-]{11}$')) &&
         data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100 &&
         data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.authorId == request.auth.uid &&
@@ -84,6 +88,7 @@ service cloud.firestore {
         data.text is string && data.text.size() >= 1 && data.text.size() <= 1500 &&
         data.movieTitle is string && data.movieTitle.size() >= 0 && data.movieTitle.size() <= 200 &&
         data.movieLink is string && data.movieLink.size() >= 0 && data.movieLink.size() <= 1000 &&
+        (data.movieLink.size() == 0 || data.movieLink.matches('^https?://.*')) &&
         data.createdAt is timestamp;
     }
 
@@ -93,6 +98,7 @@ service cloud.firestore {
         data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.userId == request.auth.uid &&
         data.videoUrl is string && data.videoUrl.size() >= 5 && data.videoUrl.size() <= 500 &&
+        (data.videoUrl.matches('^https?://.*') || data.videoUrl.matches('^[a-zA-Z0-9_\\-]{11}$')) &&
         data.videoTitle is string && data.videoTitle.size() >= 1 && data.videoTitle.size() <= 200 &&
         data.content is string && data.content.size() >= 1 && data.content.size() <= 20000 &&
         data.createdAt is timestamp &&
@@ -106,19 +112,22 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    // 2. Users Collection (PII Protected)
+    // 2. Users Collection (PII Protected + Email Anti-Spoofing)
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId &&
         isValidUser(incoming()) &&
         incoming().uid == userId &&
-        incoming().lastLoginAt == request.time;
+        incoming().email == request.auth.token.email &&
+        incoming().lastLoginAt == request.time &&
+        incoming().createdAt == request.time;
       allow update: if isVerified() && isValidId(userId) && isValidUser(incoming()) && (
         (request.auth.uid == userId &&
           incoming().uid == existing().uid &&
+          incoming().email == request.auth.token.email &&
           incoming().lastLoginAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'deviceInfo', 'lastLoginAt', 'createdAt', 'email'])) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'whatsappNumber', 'deviceInfo', 'lastLoginAt', 'createdAt', 'email'])) ||
         isAdmin()
       );
       allow delete: if isAdmin() && isValidId(userId);
@@ -148,9 +157,12 @@ service cloud.firestore {
       allow create: if isVerified() && isValidId(chatId) && (request.auth.uid == chatId || isAdmin()) &&
         isValidCinemaChat(incoming()) &&
         incoming().userId == chatId &&
+        (isAdmin() || incoming().userEmail == request.auth.token.email) &&
+        incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
       allow update: if isVerified() && isValidId(chatId) && isValidCinemaChat(incoming()) &&
         incoming().userId == existing().userId &&
+        (isAdmin() || incoming().userEmail == request.auth.token.email) &&
         incoming().updatedAt == request.time && (
           ((request.auth.uid == chatId || isAdmin()) &&
             incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'updatedAt', 'createdAt', 'userName', 'userEmail'])) ||
@@ -170,7 +182,7 @@ service cloud.firestore {
           isValidCinemaMessage(incoming()) &&
           incoming().chatOwnerId == chatId &&
           incoming().createdAt == request.time &&
-          ((request.auth.uid == chatId && incoming().senderRole == 'user') ||
+          ((request.auth.uid == chatId && incoming().senderRole == 'user' && incoming().movieLink == '') ||
            (isAdmin() && incoming().senderRole == 'admin')) &&
           exists(/databases/$(database)/documents/cinemaChats/$(chatId));
         allow update: if false;
@@ -180,7 +192,7 @@ service cloud.firestore {
 
     // 6. Private YouTube Video Study Notes
     match /userNotes/{noteId} {
-      allow get: if isSignedIn() && isValidId(noteId) && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(noteId) && (resource.data.userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (isBootstrappedAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isVerified() && isValidId(noteId) && isValidUserNote(incoming()) &&
         incoming().createdAt == request.time &&
@@ -191,7 +203,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly(['videoUrl', 'videoTitle', 'content', 'updatedAt']);
-      allow delete: if isVerified() && isValidId(noteId) && resource.data.userId == request.auth.uid;
+      allow delete: if isVerified() && isValidId(noteId) && (resource.data.userId == request.auth.uid || isAdmin());
     }
   }
 }

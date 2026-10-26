@@ -20,7 +20,8 @@ import {
   orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db, auth, ADMIN_EMAIL, handleFirestoreError, OperationType } from '../firebase';
+import { db, auth, ADMIN_EMAIL, googleProvider, handleFirestoreError, OperationType } from '../firebase';
+import { signInWithPopup } from 'firebase/auth';
 import { EditorialPost, PostCategory, HERO_ILLUSTRATION_URI } from '../data/seedContent';
 import { SavedUserSession } from './LoginGateModal';
 import {
@@ -28,8 +29,17 @@ import {
   LocalCinemaThread,
   CinemaChatMessage,
 } from './CinemaMachineView';
+import {
+  generateSecureId,
+  sanitizeSafeExternalUrl,
+  sanitizeSafeImageUrl,
+  sanitizeCsvCell,
+  extractYouTubeId,
+} from '../utils/toolsLogic';
 
 export const LOCAL_USERS_REGISTRY_KEY = 'polarith_all_device_logins_v1';
+const ALLOWED_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_IMAGE_FILE_BYTES = 220 * 1024; // 220 KB raw -> ~295 KB Base64 (< 350 KB Firestore limit)
 
 interface AdminPortalViewProps {
   posts: EditorialPost[];
@@ -67,9 +77,15 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   const [adminMovieTitle, setAdminMovieTitle] = useState('');
   const [adminMovieLink, setAdminMovieLink] = useState('');
   const [replyStatus, setReplyStatus] = useState<string | null>(null);
+  const [replyError, setReplyError] = useState<string | null>(null);
+
+  const isAuthorizedAdminSession =
+    currentUser.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase() ||
+    auth.currentUser?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
 
   const isVerifiedFirebaseAdmin =
-    auth.currentUser?.email === ADMIN_EMAIL && auth.currentUser?.emailVerified === true;
+    auth.currentUser?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+    auth.currentUser?.emailVerified === true;
 
   // Load Users Registry & Cinema Threads from LocalStorage + Firestore if verified admin
   useEffect(() => {
@@ -106,6 +122,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
             email: String(data.email || ''),
             displayName: String(data.displayName || 'User'),
             photoURL: String(data.photoURL || ''),
+            whatsappNumber: String(data.whatsappNumber || 'Not provided'),
             deviceInfo: String(data.deviceInfo || 'Browser Session'),
             lastLoginAt: 'Synced via Firebase Auth',
             createdAt: 'Registered',
@@ -198,13 +215,31 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   }, [isVerifiedFirebaseAdmin, selectedUserId]);
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setPublishError(null);
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!ALLOWED_IMAGE_MIMES.includes(file.type)) {
+      setPublishError('Unsupported image format. Please upload JPEG, PNG, WEBP, or GIF.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      setPublishError('Image file exceeds 220 KB cloud limit. Please compress or paste an external HTTPS image URL.');
+      e.target.value = '';
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') {
+      if (typeof reader.result === 'string' && reader.result.length <= 350000) {
         setImageUrl(reader.result);
+      } else {
+        setPublishError('Encoded image exceeds maximum size threshold.');
       }
+    };
+    reader.onerror = () => {
+      setPublishError('Failed to read image file.');
     };
     reader.readAsDataURL(file);
   };
@@ -214,32 +249,51 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     setPublishError(null);
     setPublishStatus(null);
 
+    if (!isAuthorizedAdminSession) {
+      setPublishError('Unauthorized: Admin session required.');
+      return;
+    }
+
     const trimmedTitle = title.trim();
     const trimmedSummary = summary.trim();
     const trimmedContent = content.trim();
+    const trimmedVid = videoUrl.trim();
 
-    if (trimmedTitle.length < 3) {
-      setPublishError('Headline must be at least 3 characters.');
+    if (trimmedTitle.length < 3 || trimmedTitle.length > 200) {
+      setPublishError('Headline must be between 3 and 200 characters.');
       return;
     }
-    if (trimmedSummary.length < 10) {
-      setPublishError('Summary must be at least 10 characters.');
+    if (trimmedSummary.length < 10 || trimmedSummary.length > 600) {
+      setPublishError('Summary must be between 10 and 600 characters.');
       return;
     }
-    if (trimmedContent.length < 20) {
-      setPublishError('Article / Vlog body must be at least 20 characters.');
+    if (trimmedContent.length < 20 || trimmedContent.length > 25000) {
+      setPublishError('Article / Vlog body must be between 20 and 25,000 characters.');
+      return;
+    }
+    if (trimmedVid && !extractYouTubeId(trimmedVid)) {
+      setPublishError('Optional Video URL must be a valid YouTube link or 11-character video ID.');
       return;
     }
 
-    const postId = `post_${Date.now()}`;
+    const safeImg = imageUrl.trim()
+      ? sanitizeSafeImageUrl(imageUrl.trim(), '')
+      : HERO_ILLUSTRATION_URI;
+
+    if (imageUrl.trim() && !safeImg) {
+      setPublishError('Invalid Image URL. Only HTTPS/HTTP links or verified uploaded images are permitted.');
+      return;
+    }
+
+    const postId = generateSecureId('post');
     const newPost: EditorialPost = {
       id: postId,
       title: trimmedTitle.slice(0, 200),
       category,
       summary: trimmedSummary.slice(0, 600),
       content: trimmedContent.slice(0, 25000),
-      imageUrl: (imageUrl.trim() || HERO_ILLUSTRATION_URI).slice(0, 350000),
-      videoUrl: videoUrl.trim().slice(0, 500),
+      imageUrl: safeImg.slice(0, 350000),
+      videoUrl: trimmedVid.slice(0, 500),
       authorName: 'Priyam Kesh',
       authorId: auth.currentUser?.uid || 'admin_priyam',
       readTime: (readTime.trim() || '5 min read').slice(0, 40),
@@ -281,25 +335,42 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   const handleSendAdminCinemaLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setReplyStatus(null);
-    const targetUid = selectedUserId || currentUser.uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+    setReplyError(null);
+
+    if (!isAuthorizedAdminSession) {
+      setReplyError('Unauthorized: Admin session required.');
+      return;
+    }
+
+    const targetUid = (selectedUserId || currentUser.uid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
     const trimmedReply = adminReplyText.trim();
     const trimmedTitle = adminMovieTitle.trim();
-    const trimmedLink = adminMovieLink.trim();
+    const rawLink = adminMovieLink.trim();
+    const safeLink = rawLink ? sanitizeSafeExternalUrl(rawLink) : '';
 
-    if (!trimmedReply && !trimmedLink) return;
+    if (rawLink && !safeLink) {
+      setReplyError('Invalid Movie Link: Must be a valid https:// or http:// URL.');
+      return;
+    }
 
-    const msgId = `admin_msg_${Date.now()}`;
+    if (!trimmedReply && !safeLink) {
+      setReplyError('Please provide an admin message or a valid movie URL.');
+      return;
+    }
+
+    const msgId = generateSecureId('admin_msg');
     const newMsg: CinemaChatMessage = {
       id: msgId,
       chatOwnerId: targetUid,
       senderId: auth.currentUser?.uid || 'admin_priyam',
       senderName: 'Priyam Kesh (Admin)',
       senderRole: 'admin',
-      text:
+      text: (
         trimmedReply ||
-        `Here is the requested movie link for "${trimmedTitle || 'your requested film'}". Enjoy watching!`,
-      movieTitle: trimmedTitle,
-      movieLink: trimmedLink,
+        `Here is the requested movie link for "${trimmedTitle || 'your requested film'}". Enjoy watching!`
+      ).slice(0, 1500),
+      movieTitle: trimmedTitle.slice(0, 200),
+      movieLink: safeLink,
       createdAtLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
@@ -363,11 +434,18 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   };
 
   const handleExportUsersCsv = () => {
-    const header = 'UID,Full Name,Gmail Address,Device Info,Last Login\n';
+    if (!isAuthorizedAdminSession) return;
+    const header = 'UID,Full Name,Gmail Address,WhatsApp Number,Device Info,Last Login\n';
     const rows = registeredUsers
-      .map(
-        (u) =>
-          `"${u.uid}","${u.displayName.replace(/"/g, '""')}","${u.email}","${u.deviceInfo.replace(/"/g, '""')}","${u.lastLoginAt}"`
+      .map((u) =>
+        [
+          sanitizeCsvCell(u.uid),
+          sanitizeCsvCell(u.displayName),
+          sanitizeCsvCell(u.email),
+          sanitizeCsvCell(u.whatsappNumber || 'Not provided'),
+          sanitizeCsvCell(u.deviceInfo),
+          sanitizeCsvCell(u.lastLoginAt),
+        ].join(',')
       )
       .join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8' });
@@ -381,8 +459,37 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const activeThreadId = selectedUserId || currentUser.uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const activeThreadId = (selectedUserId || currentUser.uid).replace(/[^a-zA-Z0-9_-]/g, '_');
   const activeThread = threads[activeThreadId];
+
+  if (!isAuthorizedAdminSession) {
+    return (
+      <section className="frosted-panel rounded-2xl p-8 sm:p-12 max-w-xl mx-auto text-center space-y-5 border border-rose-200/80">
+        <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mx-auto">
+          <Shield className="w-6 h-6" />
+        </div>
+        <h1 className="text-2xl font-serif-display font-semibold text-slate-900">
+          Executive Admin Console Locked
+        </h1>
+        <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+          You are currently signed in as <span className="font-mono-tabular font-semibold text-slate-900">{currentUser.email}</span>. Access to <span className="font-mono-tabular">/#!/admin</span> is restricted exclusively to the verified Polarith Softwares founder account (<span className="font-mono-tabular">{ADMIN_EMAIL}</span>).
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              await signInWithPopup(auth, googleProvider);
+            } catch {
+              // ignore popup cancellation
+            }
+          }}
+          className="px-6 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-medium transition-colors cursor-pointer"
+        >
+          Authenticate with Admin Google Account
+        </button>
+      </section>
+    );
+  }
 
   return (
     <div className="space-y-10">
@@ -700,6 +807,11 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
             )}
 
             <form onSubmit={handleSendAdminCinemaLink} className="space-y-4">
+              {replyError && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700">
+                  {replyError}
+                </div>
+              )}
               {replyStatus && (
                 <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
                   {replyStatus}
@@ -789,6 +901,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
                 <tr className="border-b border-slate-200 text-slate-500">
                   <th className="py-3 pr-4 font-medium">User Name</th>
                   <th className="py-3 px-4 font-medium">Gmail Address</th>
+                  <th className="py-3 px-4 font-medium">WhatsApp Number</th>
                   <th className="py-3 px-4 font-medium">Auth Method</th>
                   <th className="py-3 px-4 font-medium">Device & Platform Telemetry</th>
                   <th className="py-3 pl-4 font-medium">Last Login</th>
@@ -799,6 +912,9 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
                   <tr key={u.uid} className="hover:bg-white/50">
                     <td className="py-3 pr-4 font-semibold text-slate-900">{u.displayName}</td>
                     <td className="py-3 px-4 font-mono-tabular text-indigo-700">{u.email}</td>
+                    <td className="py-3 px-4 font-mono-tabular font-medium text-emerald-700">
+                      {u.whatsappNumber || 'Not provided'}
+                    </td>
                     <td className="py-3 px-4">{u.authMethod}</td>
                     <td className="py-3 px-4 font-mono-tabular text-slate-500 max-w-xs truncate">
                       {u.deviceInfo}

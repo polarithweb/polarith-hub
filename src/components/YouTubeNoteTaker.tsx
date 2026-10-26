@@ -21,7 +21,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { extractYouTubeId } from '../utils/toolsLogic';
+import { extractYouTubeId, generateSecureId, sanitizeSafeExternalUrl } from '../utils/toolsLogic';
 
 export interface StudyNoteItem {
   id: string;
@@ -62,7 +62,16 @@ export const YouTubeNoteTaker: React.FC<YouTubeNoteTakerProps> = ({ initialUrl }
       const raw = localStorage.getItem(LOCAL_NOTES_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as StudyNoteItem[];
-        if (Array.isArray(parsed)) setSavedNotes(parsed);
+        if (Array.isArray(parsed)) {
+          const validNotes = parsed.filter(
+            (n) =>
+              n &&
+              typeof n.id === 'string' &&
+              typeof n.videoTitle === 'string' &&
+              typeof n.content === 'string'
+          );
+          setSavedNotes(validNotes);
+        }
       }
     } catch {
       // ignore local storage parse error
@@ -116,19 +125,19 @@ export const YouTubeNoteTaker: React.FC<YouTubeNoteTakerProps> = ({ initialUrl }
   const handleSaveNote = async () => {
     const trimmedTitle = videoTitle.trim().slice(0, 200) || 'Study Session Notes';
     const trimmedContent = noteContent.trim().slice(0, 20000);
-    const trimmedUrl =
-      videoUrl.trim().slice(0, 500) ||
-      (activeVideoId ? `https://www.youtube.com/watch?v=${activeVideoId}` : 'https://youtube.com');
+    const safeVideoUrl =
+      sanitizeSafeExternalUrl(videoUrl.trim()) ||
+      (activeVideoId ? `https://www.youtube.com/watch?v=${activeVideoId}` : 'https://www.youtube.com');
 
     if (!trimmedContent) {
       setStatusBanner('Please write some notes before saving.');
       return;
     }
 
-    const noteId = `note_${activeVideoId || 'custom'}_${Date.now()}`;
+    const noteId = generateSecureId('note');
     const newItem: StudyNoteItem = {
       id: noteId,
-      videoUrl: trimmedUrl,
+      videoUrl: safeVideoUrl,
       videoTitle: trimmedTitle,
       content: trimmedContent,
       updatedAtLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -142,7 +151,7 @@ export const YouTubeNoteTaker: React.FC<YouTubeNoteTakerProps> = ({ initialUrl }
       try {
         await setDoc(doc(db, 'userNotes', noteId), {
           userId: auth.currentUser.uid,
-          videoUrl: trimmedUrl,
+          videoUrl: safeVideoUrl,
           videoTitle: trimmedTitle,
           content: trimmedContent,
           createdAt: serverTimestamp(),

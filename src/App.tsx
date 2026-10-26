@@ -45,6 +45,8 @@ import {
   parseHashRoute,
   AppRoute,
   extractYouTubeId,
+  sanitizeSafeImageUrl,
+  sanitizeWhatsappNumber,
 } from './utils/toolsLogic';
 import {
   INITIAL_EDITORIAL_POSTS,
@@ -63,7 +65,8 @@ import {
   LOCAL_USERS_REGISTRY_KEY,
 } from './components/AdminPortalView';
 
-const DEVICE_SESSION_KEY = 'polarith_device_user_v1';
+const DEVICE_SESSION_KEY = 'polarith_device_user_v2';
+const USER_WHATSAPP_KEY = 'polarith_user_whatsapp_v1';
 const LOCAL_POSTS_KEY = 'polarith_published_posts_v2';
 
 const CATEGORY_METADATA: Record<
@@ -244,25 +247,51 @@ export default function App() {
   const [selectedPost, setSelectedPost] = useState<EditorialPost | null>(null);
   const [noteTakerSeedUrl, setNoteTakerSeedUrl] = useState<string | undefined>(undefined);
 
-  // Saved Device User Session State
+  // Saved Device User Session State (Runtime Schema Validated + WhatsApp Number Required)
   const [userSession, setUserSession] = useState<SavedUserSession | null>(() => {
     try {
       const saved = localStorage.getItem(DEVICE_SESSION_KEY);
       if (saved) {
-        return JSON.parse(saved) as SavedUserSession;
+        const parsed = JSON.parse(saved) as Partial<SavedUserSession>;
+        const validWhatsapp = sanitizeWhatsappNumber(parsed?.whatsappNumber);
+        if (
+          parsed &&
+          typeof parsed.uid === 'string' &&
+          typeof parsed.email === 'string' &&
+          typeof parsed.displayName === 'string' &&
+          parsed.email.includes('@') &&
+          validWhatsapp
+        ) {
+          return {
+            uid: parsed.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128),
+            email: parsed.email.slice(0, 254),
+            displayName: parsed.displayName.slice(0, 120),
+            photoURL: typeof parsed.photoURL === 'string' ? parsed.photoURL.slice(0, 1024) : '',
+            whatsappNumber: validWhatsapp,
+            deviceInfo: typeof parsed.deviceInfo === 'string' ? parsed.deviceInfo.slice(0, 300) : 'Web',
+            lastLoginAt: typeof parsed.lastLoginAt === 'string' ? parsed.lastLoginAt : 'Recent',
+            createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : 'Recent',
+            authMethod: 'google-oauth',
+          };
+        }
       }
       const params = new URLSearchParams(window.location.search);
-      if (params.get('autostart') === '1') {
+      if (
+        params.get('autostart') === '1' &&
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+      ) {
         const autoUser: SavedUserSession = {
           uid: 'user_autostart_priyam',
           email: 'priyam.dgp13@gmail.com',
           displayName: 'Priyam Kesh',
           photoURL: '',
+          whatsappNumber: '+919876543210',
           deviceInfo: navigator.userAgent.slice(0, 140),
           lastLoginAt: new Date().toLocaleString(),
           createdAt: new Date().toLocaleString(),
-          authMethod: 'device-gmail',
+          authMethod: 'google-oauth',
         };
+        localStorage.setItem(USER_WHATSAPP_KEY, autoUser.whatsappNumber);
         localStorage.setItem(DEVICE_SESSION_KEY, JSON.stringify(autoUser));
         return autoUser;
       }
@@ -275,13 +304,23 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Published Posts State (Seed + LocalStorage + Firestore)
+  // Published Posts State (Seed + LocalStorage + Firestore, Runtime Schema Validated)
   const [posts, setPosts] = useState<EditorialPost[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_POSTS_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as EditorialPost[];
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter(
+            (p) =>
+              p &&
+              typeof p.id === 'string' &&
+              typeof p.title === 'string' &&
+              typeof p.category === 'string' &&
+              typeof p.summary === 'string' &&
+              typeof p.content === 'string'
+          );
+        }
       }
     } catch {
       // ignore
@@ -306,6 +345,7 @@ export default function App() {
   ) => {
     setUserSession(session);
     try {
+      localStorage.setItem(USER_WHATSAPP_KEY, session.whatsappNumber);
       localStorage.setItem(DEVICE_SESSION_KEY, JSON.stringify(session));
       const rawAll = localStorage.getItem(LOCAL_USERS_REGISTRY_KEY);
       const list: SavedUserSession[] = rawAll ? JSON.parse(rawAll) : [];
@@ -317,6 +357,7 @@ export default function App() {
 
     if (syncFirestore && auth.currentUser && auth.currentUser.emailVerified) {
       const cleanUid = auth.currentUser.uid;
+      const safeWhatsapp = sanitizeWhatsappNumber(session.whatsappNumber) || '+910000000000';
       try {
         await setDoc(
           doc(db, 'users', cleanUid),
@@ -325,6 +366,7 @@ export default function App() {
             email: (auth.currentUser.email || session.email).slice(0, 254),
             displayName: (auth.currentUser.displayName || session.displayName).slice(0, 120),
             photoURL: (auth.currentUser.photoURL || '').slice(0, 1024),
+            whatsappNumber: safeWhatsapp,
             deviceInfo: session.deviceInfo.slice(0, 300),
             lastLoginAt: serverTimestamp(),
             createdAt: serverTimestamp(),
@@ -347,17 +389,21 @@ export default function App() {
       }
 
       if (fbUser && fbUser.email) {
-        const session: SavedUserSession = {
-          uid: fbUser.uid,
-          email: fbUser.email,
-          displayName: fbUser.displayName || fbUser.email.split('@')[0],
-          photoURL: fbUser.photoURL || '',
-          deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
-          lastLoginAt: new Date().toLocaleString(),
-          createdAt: new Date().toLocaleString(),
-          authMethod: 'google-oauth',
-        };
-        recordUserLoginToDeviceAndCloud(session, true);
+        const storedWhatsapp = sanitizeWhatsappNumber(localStorage.getItem(USER_WHATSAPP_KEY));
+        if (storedWhatsapp) {
+          const session: SavedUserSession = {
+            uid: fbUser.uid,
+            email: fbUser.email,
+            displayName: fbUser.displayName || fbUser.email.split('@')[0],
+            photoURL: fbUser.photoURL || '',
+            whatsappNumber: storedWhatsapp,
+            deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
+            lastLoginAt: new Date().toLocaleString(),
+            createdAt: new Date().toLocaleString(),
+            authMethod: 'google-oauth',
+          };
+          recordUserLoginToDeviceAndCloud(session, true);
+        }
 
         const postsQuery = query(
           collection(db, 'posts'),
@@ -405,9 +451,22 @@ export default function App() {
     };
   }, []);
 
-  const handleGooglePopupSignIn = async () => {
+  const handleGooglePopupSignIn = async (whatsappNumber: string) => {
     setAuthLoading(true);
     setAuthError(null);
+    const cleanedWhatsapp = sanitizeWhatsappNumber(whatsappNumber);
+    if (!cleanedWhatsapp) {
+      setAuthError('Please enter a valid WhatsApp number before signing in with Google.');
+      setAuthLoading(false);
+      return;
+    }
+
+    try {
+      localStorage.setItem(USER_WHATSAPP_KEY, cleanedWhatsapp);
+    } catch {
+      // ignore storage error
+    }
+
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       const fbUser = cred.user;
@@ -416,6 +475,7 @@ export default function App() {
         email: fbUser.email || 'user@gmail.com',
         displayName: fbUser.displayName || 'Google User',
         photoURL: fbUser.photoURL || '',
+        whatsappNumber: cleanedWhatsapp,
         deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
         lastLoginAt: new Date().toLocaleString(),
         createdAt: new Date().toLocaleString(),
@@ -423,30 +483,29 @@ export default function App() {
       };
       await recordUserLoginToDeviceAndCloud(session, true);
     } catch {
-      setAuthError(
-        'Google popup was blocked or closed by the browser. You can try again or save your Gmail directly below.'
-      );
+      // If user is already authenticated in Firebase Auth in this browser, complete login with their WhatsApp number
+      if (auth.currentUser && auth.currentUser.email) {
+        const fbUser = auth.currentUser;
+        const session: SavedUserSession = {
+          uid: fbUser.uid,
+          email: fbUser.email || 'user@gmail.com',
+          displayName: fbUser.displayName || fbUser.email.split('@')[0],
+          photoURL: fbUser.photoURL || '',
+          whatsappNumber: cleanedWhatsapp,
+          deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
+          lastLoginAt: new Date().toLocaleString(),
+          createdAt: new Date().toLocaleString(),
+          authMethod: 'google-oauth',
+        };
+        await recordUserLoginToDeviceAndCloud(session, true);
+      } else {
+        setAuthError(
+          'Google sign-in popup was closed or blocked by the browser. Please allow popups and click Continue with Google again.'
+        );
+      }
     } finally {
       setAuthLoading(false);
     }
-  };
-
-  const handleDeviceGmailSignIn = async (email: string, displayName: string) => {
-    setAuthLoading(true);
-    setAuthError(null);
-    const cleanUid = `user_${email.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const session: SavedUserSession = {
-      uid: cleanUid,
-      email,
-      displayName,
-      photoURL: '',
-      deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
-      lastLoginAt: new Date().toLocaleString(),
-      createdAt: new Date().toLocaleString(),
-      authMethod: 'device-gmail',
-    };
-    await recordUserLoginToDeviceAndCloud(session, false);
-    setAuthLoading(false);
   };
 
   const handlePublishPost = (newPost: EditorialPost) => {
@@ -543,7 +602,7 @@ export default function App() {
             ) : (
               <div className="aspect-video w-full rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
                 <img
-                  src={selectedPost.imageUrl || HERO_ILLUSTRATION_URI}
+                  src={sanitizeSafeImageUrl(selectedPost.imageUrl, HERO_ILLUSTRATION_URI)}
                   alt={selectedPost.title}
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"
@@ -575,7 +634,7 @@ export default function App() {
           <article className="frosted-panel rounded-2xl overflow-hidden grid grid-cols-1 lg:grid-cols-12 items-stretch">
             <div className="lg:col-span-7 bg-slate-100 min-h-[260px]">
               <img
-                src={leadPost.imageUrl || HERO_ILLUSTRATION_URI}
+                src={sanitizeSafeImageUrl(leadPost.imageUrl, HERO_ILLUSTRATION_URI)}
                 alt={leadPost.title}
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
@@ -632,7 +691,7 @@ export default function App() {
                 <div>
                   <div className="aspect-video w-full bg-slate-100 border-b border-slate-200/60">
                     <img
-                      src={post.imageUrl || HERO_ILLUSTRATION_URI}
+                      src={sanitizeSafeImageUrl(post.imageUrl, HERO_ILLUSTRATION_URI)}
                       alt={post.title}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover"
@@ -680,11 +739,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* First-Visit Gmail Login Gate Modal */}
+      {/* First-Visit Google (Gmail) + WhatsApp Login Gate Modal */}
       {!userSession && (
         <LoginGateModal
           onGoogleSignIn={handleGooglePopupSignIn}
-          onDeviceGmailSignIn={handleDeviceGmailSignIn}
           isLoading={authLoading}
           errorMsg={authError}
         />
@@ -783,12 +841,13 @@ export default function App() {
                     <div className="flex items-center gap-3 bg-slate-100 px-3.5 py-2 rounded-xl text-xs">
                       <span className="text-slate-700">
                         Signed in: <strong className="text-slate-900">{userSession.displayName}</strong> (
-                        {userSession.email})
+                        {userSession.email} · {userSession.whatsappNumber})
                       </span>
                       <button
                         type="button"
                         onClick={() => {
                           localStorage.removeItem(DEVICE_SESSION_KEY);
+                          localStorage.removeItem(USER_WHATSAPP_KEY);
                           setUserSession(null);
                           setHamburgerMenuOpen(false);
                         }}
@@ -801,10 +860,10 @@ export default function App() {
                   ) : (
                     <button
                       type="button"
-                      onClick={handleGooglePopupSignIn}
+                      onClick={() => setHamburgerMenuOpen(false)}
                       className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-medium cursor-pointer"
                     >
-                      Sign in with Gmail
+                      Sign in with Google
                     </button>
                   )}
                 </div>
@@ -874,10 +933,11 @@ export default function App() {
                 email: 'guest@gmail.com',
                 displayName: 'Guest Viewer',
                 photoURL: '',
+                whatsappNumber: 'Not signed in',
                 deviceInfo: 'Web Browser',
                 lastLoginAt: 'Active Now',
                 createdAt: 'Today',
-                authMethod: 'device-gmail',
+                authMethod: 'google-oauth',
               }
             }
           />
@@ -912,10 +972,11 @@ export default function App() {
                 email: 'priyam.dgp13@gmail.com',
                 displayName: 'Priyam Kesh',
                 photoURL: '',
+                whatsappNumber: '+919876543210',
                 deviceInfo: 'Admin Console',
                 lastLoginAt: 'Now',
                 createdAt: 'Today',
-                authMethod: 'device-gmail',
+                authMethod: 'google-oauth',
               }
             }
           />

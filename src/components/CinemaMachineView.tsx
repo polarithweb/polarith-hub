@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import { SavedUserSession } from './LoginGateModal';
+import { generateSecureId, sanitizeSafeExternalUrl } from '../utils/toolsLogic';
 
 export interface CinemaChatMessage {
   id: string;
@@ -46,14 +47,14 @@ export const CinemaMachineView: React.FC<CinemaMachineViewProps> = ({ currentUse
   const [sending, setSending] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
-  const chatId = currentUser.uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const chatId = (currentUser.uid || 'guest_user').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOCAL_CINEMA_THREADS_KEY);
       if (raw) {
         const allThreads = JSON.parse(raw) as Record<string, LocalCinemaThread>;
-        if (allThreads[chatId]) {
+        if (allThreads && typeof allThreads === 'object' && Array.isArray(allThreads[chatId]?.messages)) {
           setMessages(allThreads[chatId].messages);
         }
       }
@@ -111,9 +112,10 @@ export const CinemaMachineView: React.FC<CinemaMachineViewProps> = ({ currentUse
     setErrorBanner(null);
     setSending(true);
 
-    const finalBody =
-      trimmedText || `Hello Admin, could you please share the link for the movie "${trimmedMovie}"?`;
-    const msgId = `msg_${Date.now()}`;
+    const finalBody = (
+      trimmedText || `Hello Admin, could you please share the link for the movie "${trimmedMovie}"?`
+    ).slice(0, 1500);
+    const msgId = generateSecureId('msg');
     const newMsg: CinemaChatMessage = {
       id: msgId,
       chatOwnerId: chatId,
@@ -281,10 +283,10 @@ export const CinemaMachineView: React.FC<CinemaMachineViewProps> = ({ currentUse
 
                       <p className="whitespace-pre-wrap">{m.text}</p>
 
-                      {m.movieLink && (
+                      {sanitizeSafeExternalUrl(m.movieLink) && (
                         <div className="pt-2">
                           <a
-                            href={m.movieLink}
+                            href={sanitizeSafeExternalUrl(m.movieLink)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors"

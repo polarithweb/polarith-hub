@@ -60,21 +60,30 @@ export const ToolsHubView: React.FC<ToolsHubViewProps> = ({ initialTab = 'curren
   const [normHistory, setNormHistory] = useState<string[]>([]);
 
   const handleNormDigit = (digit: string) => {
-    if (normResetNext) {
+    if (normResetNext || normDisplay.startsWith('Error') || normDisplay === 'NaN' || normDisplay === 'Infinity') {
       setNormDisplay(digit === '.' ? '0.' : digit);
       setNormResetNext(false);
       return;
     }
+    if (normDisplay.length >= 16) return;
     if (digit === '.' && normDisplay.includes('.')) return;
     setNormDisplay(normDisplay === '0' && digit !== '.' ? digit : normDisplay + digit);
   };
 
   const handleNormOperator = (nextOp: '+' | '-' | '×' | '÷') => {
-    const currentVal = parseFloat(normDisplay);
-    if (normPrev === null) {
+    const rawVal = parseFloat(normDisplay);
+    const currentVal = Number.isFinite(rawVal) ? rawVal : 0;
+    if (normPrev === null || !Number.isFinite(normPrev)) {
       setNormPrev(currentVal);
     } else if (normOp && !normResetNext) {
       const computed = computeBasic(normPrev, currentVal, normOp);
+      if (!Number.isFinite(computed)) {
+        setNormDisplay('Error (Div by 0)');
+        setNormPrev(null);
+        setNormOp(null);
+        setNormResetNext(true);
+        return;
+      }
       setNormPrev(computed);
       setNormDisplay(String(computed));
     }
@@ -83,6 +92,7 @@ export const ToolsHubView: React.FC<ToolsHubViewProps> = ({ initialTab = 'curren
   };
 
   const computeBasic = (a: number, b: number, op: '+' | '-' | '×' | '÷'): number => {
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
     switch (op) {
       case '+':
         return Number((a + b).toFixed(8));
@@ -97,9 +107,10 @@ export const ToolsHubView: React.FC<ToolsHubViewProps> = ({ initialTab = 'curren
 
   const handleNormEquals = () => {
     if (normPrev === null || !normOp) return;
-    const currentVal = parseFloat(normDisplay);
+    const rawVal = parseFloat(normDisplay);
+    const currentVal = Number.isFinite(rawVal) ? rawVal : 0;
     const result = computeBasic(normPrev, currentVal, normOp);
-    const formatted = Number.isNaN(result) ? 'Error (Div by 0)' : String(result);
+    const formatted = !Number.isFinite(result) ? 'Error (Div by 0)' : String(result);
     setNormHistory((prev) => [`${normPrev} ${normOp} ${currentVal} = ${formatted}`, ...prev.slice(0, 6)]);
     setNormDisplay(formatted);
     setNormPrev(null);
@@ -118,40 +129,45 @@ export const ToolsHubView: React.FC<ToolsHubViewProps> = ({ initialTab = 'curren
   const handleSciUnary = (
     fn: 'sin' | 'cos' | 'tan' | 'sqrt' | 'log' | 'ln' | 'inv' | 'sq' | 'fact'
   ) => {
-    const val = parseFloat(sciDisplay) || 0;
+    const rawVal = parseFloat(sciDisplay);
+    const val = Number.isFinite(rawVal) ? rawVal : 0;
     const out = evaluateScientificOperation(fn, val, angleMode);
-    const textOut = Number.isNaN(out) ? 'Domain Error' : String(out);
+    const textOut = !Number.isFinite(out) ? 'Domain Error' : String(out);
     setSciLog(`${fn}${fn === 'sin' || fn === 'cos' || fn === 'tan' ? `_${angleMode}` : ''}(${val}) = ${textOut}`);
     setSciDisplay(textOut);
     setSciResetNext(true);
   };
 
   const handleSciDigit = (d: string) => {
-    if (sciResetNext) {
+    if (sciResetNext || sciDisplay.includes('Error') || sciDisplay === 'NaN' || sciDisplay === 'Infinity') {
       setSciDisplay(d === '.' ? '0.' : d);
       setSciResetNext(false);
       return;
     }
+    if (sciDisplay.length >= 16) return;
     if (d === '.' && sciDisplay.includes('.')) return;
     setSciDisplay(sciDisplay === '0' && d !== '.' ? d : sciDisplay + d);
   };
 
   const handleSciBinary = (op: '+' | '-' | '×' | '÷' | '^') => {
-    setSciPrev(parseFloat(sciDisplay) || 0);
+    const rawVal = parseFloat(sciDisplay);
+    setSciPrev(Number.isFinite(rawVal) ? rawVal : 0);
     setSciBinaryOp(op);
     setSciResetNext(true);
   };
 
   const handleSciEquals = () => {
     if (sciPrev === null || !sciBinaryOp) return;
-    const b = parseFloat(sciDisplay) || 0;
+    const rawB = parseFloat(sciDisplay);
+    const b = Number.isFinite(rawB) ? rawB : 0;
     let res = 0;
     if (sciBinaryOp === '^') {
-      res = Number(Math.pow(sciPrev, b).toFixed(8));
+      const powVal = Math.pow(sciPrev, b);
+      res = Number.isFinite(powVal) ? Number(powVal.toFixed(8)) : NaN;
     } else {
       res = computeBasic(sciPrev, b, sciBinaryOp);
     }
-    const formatted = Number.isNaN(res) ? 'Error' : String(res);
+    const formatted = !Number.isFinite(res) ? 'Domain Error' : String(res);
     setSciLog(`${sciPrev} ${sciBinaryOp} ${b} = ${formatted}`);
     setSciDisplay(formatted);
     setSciPrev(null);

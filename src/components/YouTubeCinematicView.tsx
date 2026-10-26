@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Sliders, RotateCcw, Play, Monitor, Code2 } from 'lucide-react';
-import { extractYouTubeId } from '../utils/toolsLogic';
+import { extractYouTubeId, clampNumber } from '../utils/toolsLogic';
 
 interface FilterState {
   brightness: number;
@@ -85,7 +85,15 @@ export const YouTubeCinematicView: React.FC<{
     }
   };
 
-  const cssFilterString = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturate}%) sepia(${filters.sepia}%) hue-rotate(${filters.hueRotate}deg) blur(${filters.blur}px)`;
+  const safeBrightness = clampNumber(filters.brightness, 50, 150, 100);
+  const safeContrast = clampNumber(filters.contrast, 50, 160, 102);
+  const safeSaturate = clampNumber(filters.saturate, 0, 200, 105);
+  const safeSepia = clampNumber(filters.sepia, 0, 100, 0);
+  const safeHue = clampNumber(filters.hueRotate, -180, 180, 0);
+  const safeBlur = clampNumber(filters.blur, 0, 8, 0);
+  const safeScale = clampNumber(filters.scale, 85, 120, 100);
+
+  const cssFilterString = `brightness(${safeBrightness}%) contrast(${safeContrast}%) saturate(${safeSaturate}%) sepia(${safeSepia}%) hue-rotate(${safeHue}deg) blur(${safeBlur}px)`;
 
   return (
     <div className="space-y-12">
@@ -199,7 +207,7 @@ export const YouTubeCinematicView: React.FC<{
               style={{
                 aspectRatio: filters.aspectRatio,
                 filter: cssFilterString,
-                transform: `scale(${filters.scale / 100})`,
+                transform: `scale(${safeScale / 100})`,
               }}
             >
               {activeVideoId ? (

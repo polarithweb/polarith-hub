@@ -25,7 +25,16 @@ export interface ParsedRoute {
 }
 
 export function parseHashRoute(hash: string): ParsedRoute {
-  const cleaned = hash.replace(/^#\/?/, '').trim().toLowerCase();
+  if (typeof hash !== 'string') {
+    return { route: 'dashboard' };
+  }
+  const cleaned = hash
+    .replace(/^#\/?/, '')
+    .split('?')[0]
+    .replace(/\/+$/, '')
+    .trim()
+    .toLowerCase();
+
   if (!cleaned || cleaned === 'dashboard' || cleaned === 'home') {
     return { route: 'dashboard' };
   }
@@ -70,9 +79,108 @@ export function parseHashRoute(hash: string): ParsedRoute {
   return { route: 'dashboard' };
 }
 
+/**
+ * Generates a collision-resistant, Firestore-rule-compliant ID (`^[a-zA-Z0-9_-]{1,128}$`).
+ */
+export function generateSecureId(prefix: string): string {
+  const safePrefix = (prefix || 'id').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'id';
+  const timestamp = Date.now().toString(36);
+  let randomPart = '';
+
+  if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
+    const bytes = new Uint8Array(8);
+    globalThis.crypto.getRandomValues(bytes);
+    randomPart = Array.from(bytes, (b) => b.toString(36).padStart(2, '0'))
+      .join('')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 12);
+  } else {
+    randomPart = Math.random().toString(36).slice(2, 12);
+  }
+
+  return `${safePrefix}_${timestamp}_${randomPart}`.slice(0, 96);
+}
+
+/**
+ * Sanitizes external links (e.g. Cinema Machine movie links) to strictly allow HTTP/HTTPS protocols.
+ * Blocks `javascript:`, `data:`, `vbscript:`, `file:`, and malformed URLs.
+ */
+export function sanitizeSafeExternalUrl(rawUrl: unknown): string {
+  if (typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.length > 1000) return '';
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return '';
+    }
+    return parsed.toString().slice(0, 1000);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Sanitizes image URLs to strictly allow `https:`, `http:`, or safe `data:image/...` URIs within Firestore size bounds.
+ */
+export function sanitizeSafeImageUrl(rawUrl: unknown, fallbackUrl = ''): string {
+  if (typeof rawUrl !== 'string') return fallbackUrl;
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.length > 350000) return fallbackUrl;
+
+  if (/^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);(base64,[a-zA-Z0-9+/=]+|utf8,.*)$/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString().slice(0, 2048);
+    }
+  } catch {
+    // fall through to fallback
+  }
+
+  return fallbackUrl;
+}
+
+/**
+ * Validates and normalizes a WhatsApp phone number (`^\+?[0-9]{7,15}$`).
+ * Strips spaces, hyphens, and parentheses. Returns null if invalid.
+ */
+export function sanitizeWhatsappNumber(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.replace(/[\s\-()]/g, '').trim();
+  if (!/^\+?[0-9]{7,15}$/.test(cleaned)) {
+    return null;
+  }
+  return cleaned;
+}
+
+/**
+ * Neutralizes CSV Formula Injection (CWE-1236) and escapes double quotes for RFC 4180 compliance.
+ */
+export function sanitizeCsvCell(raw: unknown): string {
+  const str = typeof raw === 'string' ? raw : String(raw ?? '');
+  const cleaned = str.replace(/[\r\n]+/g, ' ').trim();
+  const formulaNeutralized = /^[=+\-@\t\r]/.test(cleaned) ? `'${cleaned}` : cleaned;
+  return `"${formulaNeutralized.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Clamps a numeric value between [min, max], returning fallback if NaN or infinite.
+ */
+export function clampNumber(val: unknown, min: number, max: number, fallback: number): number {
+  const num = typeof val === 'number' ? val : Number(val);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
+
 export function extractYouTubeId(input: string): string | null {
+  if (typeof input !== 'string') return null;
   const trimmed = input.trim();
-  if (!trimmed) return null;
+  if (!trimmed || trimmed.length > 1000) return null;
 
   if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
     return trimmed;
@@ -95,7 +203,10 @@ export function extractYouTubeId(input: string): string | null {
       const segments = url.pathname.split('/').filter(Boolean);
       if (
         segments.length >= 2 &&
-        (segments[0] === 'embed' || segments[0] === 'shorts' || segments[0] === 'live' || segments[0] === 'v')
+        (segments[0] === 'embed' ||
+          segments[0] === 'shorts' ||
+          segments[0] === 'live' ||
+          segments[0] === 'v')
       ) {
         const candidate = segments[1];
         return /^[a-zA-Z0-9_-]{11}$/.test(candidate) ? candidate : null;
@@ -128,16 +239,23 @@ export function convertCurrency(
   toCode: string,
   customRates: Record<string, { name: string; symbol: string; rate: number }> = CURRENCY_RATES_USD_BASE
 ): { converted: number; unitRate: number } {
-  if (!Number.isFinite(amount) || amount < 0) {
+  if (!Number.isFinite(amount) || amount < 0 || amount > 1e15) {
     return { converted: 0, unitRate: 0 };
   }
-  const fromEntry = customRates[fromCode];
-  const toEntry = customRates[toCode];
-  if (!fromEntry || !toEntry || fromEntry.rate <= 0) {
+  const fromEntry = Object.prototype.hasOwnProperty.call(customRates, fromCode)
+    ? customRates[fromCode]
+    : undefined;
+  const toEntry = Object.prototype.hasOwnProperty.call(customRates, toCode)
+    ? customRates[toCode]
+    : undefined;
+  if (!fromEntry || !toEntry || !Number.isFinite(fromEntry.rate) || fromEntry.rate <= 0) {
     return { converted: 0, unitRate: 0 };
   }
   const unitRate = toEntry.rate / fromEntry.rate;
   const converted = amount * unitRate;
+  if (!Number.isFinite(converted)) {
+    return { converted: 0, unitRate: 0 };
+  }
   return {
     converted: Number(converted.toFixed(4)),
     unitRate: Number(unitRate.toFixed(6)),
@@ -156,10 +274,28 @@ export interface AgeBreakdown {
 }
 
 export function calculateExactAge(birthDateStr: string, referenceDateStr: string): AgeBreakdown {
+  if (typeof birthDateStr !== 'string' || typeof referenceDateStr !== 'string') {
+    return {
+      years: 0,
+      months: 0,
+      days: 0,
+      totalDays: 0,
+      totalWeeks: 0,
+      totalHours: 0,
+      nextBirthdayDays: 0,
+      isValid: false,
+    };
+  }
   const birth = new Date(`${birthDateStr}T00:00:00Z`);
   const ref = new Date(`${referenceDateStr}T00:00:00Z`);
 
-  if (Number.isNaN(birth.getTime()) || Number.isNaN(ref.getTime()) || birth > ref) {
+  if (
+    Number.isNaN(birth.getTime()) ||
+    Number.isNaN(ref.getTime()) ||
+    birth > ref ||
+    birth.getUTCFullYear() < 1900 ||
+    ref.getUTCFullYear() > 2200
+  ) {
     return {
       years: 0,
       months: 0,
@@ -215,7 +351,14 @@ export function calculatePixelsPerMm(
   screenWidthPx: number,
   screenHeightPx: number
 ): number {
-  if (diagonalInches <= 0 || screenWidthPx <= 0 || screenHeightPx <= 0) {
+  if (
+    !Number.isFinite(diagonalInches) ||
+    !Number.isFinite(screenWidthPx) ||
+    !Number.isFinite(screenHeightPx) ||
+    diagonalInches <= 0 ||
+    screenWidthPx <= 0 ||
+    screenHeightPx <= 0
+  ) {
     return 3.7795;
   }
   const diagonalPx = Math.hypot(screenWidthPx, screenHeightPx);
@@ -239,14 +382,20 @@ export function evaluateScientificOperation(
   value: number,
   angleMode: 'DEG' | 'RAD' = 'DEG'
 ): number {
+  if (!Number.isFinite(value)) return NaN;
   const rad = angleMode === 'DEG' ? (value * Math.PI) / 180 : value;
   switch (op) {
     case 'sin':
       return Number(Math.sin(rad).toFixed(10));
     case 'cos':
       return Number(Math.cos(rad).toFixed(10));
-    case 'tan':
+    case 'tan': {
+      // Guard asymptotes in DEG mode (e.g. 90, 270 degrees)
+      if (angleMode === 'DEG' && Math.abs(((value % 180) + 180) % 180 - 90) < 1e-9) {
+        return NaN;
+      }
       return Number(Math.tan(rad).toFixed(10));
+    }
     case 'sqrt':
       return value < 0 ? NaN : Number(Math.sqrt(value).toFixed(10));
     case 'log':
@@ -255,8 +404,10 @@ export function evaluateScientificOperation(
       return value <= 0 ? NaN : Number(Math.log(value).toFixed(10));
     case 'inv':
       return value === 0 ? NaN : Number((1 / value).toFixed(10));
-    case 'sq':
-      return Number((value * value).toFixed(10));
+    case 'sq': {
+      const sq = value * value;
+      return Number.isFinite(sq) ? Number(sq.toFixed(10)) : Infinity;
+    }
     case 'fact':
       return factorial(value);
   }
