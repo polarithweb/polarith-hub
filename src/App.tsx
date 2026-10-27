@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Video,
   Cpu,
@@ -23,6 +23,7 @@ import {
   ArrowLeftRight,
   Sigma,
   Sparkles,
+  Clock,
 } from 'lucide-react';
 import { signInWithPopup, onAuthStateChanged } from 'firebase/auth';
 import {
@@ -47,6 +48,8 @@ import {
   extractYouTubeId,
   sanitizeSafeImageUrl,
   sanitizeWhatsappNumber,
+  getLocalCycleDateKey,
+  formatScreenTimeDuration,
 } from './utils/toolsLogic';
 import {
   INITIAL_EDITORIAL_POSTS,
@@ -63,6 +66,8 @@ import { ToolsHubView, ToolKey } from './components/ToolsHubView';
 import {
   AdminPortalView,
   LOCAL_USERS_REGISTRY_KEY,
+  LOCAL_DAILY_USAGE_KEY,
+  DailyScreenTimeRecord,
 } from './components/AdminPortalView';
 
 const DEVICE_SESSION_KEY = 'polarith_device_user_v2';
@@ -304,6 +309,188 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  // Daily 12:00 AM - 12:00 AM (24-Hour Cycle) Foreground On-Screen Time Map
+  const [dailyUsageMap, setDailyUsageMap] = useState<Record<string, DailyScreenTimeRecord>>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_DAILY_USAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Record<string, DailyScreenTimeRecord>;
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore storage parse error
+    }
+    return {};
+  });
+
+  const dailyUsageMapRef = useRef<Record<string, DailyScreenTimeRecord>>(dailyUsageMap);
+  useEffect(() => {
+    dailyUsageMapRef.current = dailyUsageMap;
+  }, [dailyUsageMap]);
+
+  const syncUsageRecordToCloud = useCallback(async (record: DailyScreenTimeRecord) => {
+    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (auth.currentUser.uid !== record.uid) return;
+    const safeWhatsapp = sanitizeWhatsappNumber(record.whatsappNumber) || '+910000000000';
+    try {
+      await setDoc(
+        doc(db, 'dailyUsageLogs', record.logId),
+        {
+          uid: record.uid.slice(0, 128),
+          displayName: record.displayName.slice(0, 120),
+          email: (auth.currentUser.email || record.email).slice(0, 254),
+          whatsappNumber: safeWhatsapp,
+          dateKey: record.dateKey.slice(0, 10),
+          activeSeconds: Math.min(86400, Math.max(0, Math.floor(record.activeSeconds))),
+          formattedDuration: record.formattedDuration.slice(0, 32),
+          cycleWindow: record.cycleWindow.slice(0, 64),
+          status: record.status,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `dailyUsageLogs/${record.logId}`);
+    }
+  }, []);
+
+  // 12:00 AM to 12:00 AM (24-Hour Cycle) Foreground Active On-Screen Timer
+  // Counts ONLY when document.visibilityState === 'visible' (never in background tabs)
+  const activeDateKeyRef = useRef<string>(getLocalCycleDateKey(new Date()));
+
+  useEffect(() => {
+    if (!userSession) return;
+
+    const cleanUid = userSession.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+    const safeWhatsapp = sanitizeWhatsappNumber(userSession.whatsappNumber) || '+910000000000';
+
+    const tickForegroundScreenTime = () => {
+      // Strictly measure active foreground screen time only; pause when tab is hidden/minimized
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+
+      const now = new Date();
+      const currentDateKey = getLocalCycleDateKey(now);
+      const previousDateKey = activeDateKeyRef.current;
+
+      setDailyUsageMap((prev) => {
+        const next = { ...prev };
+
+        // Detect 12:00 AM midnight rollover -> finalize previous 24h cycle and dispatch to Admin Dashboard
+        if (previousDateKey && previousDateKey !== currentDateKey) {
+          const prevLogId = `${cleanUid}_${previousDateKey}`;
+          const prevRecord = next[prevLogId];
+          if (prevRecord) {
+            const finalizedPrev: DailyScreenTimeRecord = {
+              ...prevRecord,
+              status: 'completed-12am',
+              lastActiveAt: 'Dispatched at 12:00 AM Midnight',
+            };
+            next[prevLogId] = finalizedPrev;
+            void syncUsageRecordToCloud(finalizedPrev);
+          }
+          activeDateKeyRef.current = currentDateKey;
+        }
+
+        const todayLogId = `${cleanUid}_${currentDateKey}`;
+        const existingToday = next[todayLogId];
+        const nextSeconds = Math.min(86400, (existingToday?.activeSeconds || 0) + 1);
+        const dur = formatScreenTimeDuration(nextSeconds);
+
+        const updatedToday: DailyScreenTimeRecord = {
+          logId: todayLogId,
+          uid: cleanUid,
+          displayName: userSession.displayName.slice(0, 120),
+          email: userSession.email.slice(0, 254),
+          whatsappNumber: safeWhatsapp,
+          dateKey: currentDateKey,
+          activeSeconds: dur.clampedSeconds,
+          formattedDuration: dur.hhmmss,
+          readableDuration: dur.readable,
+          cycleWindow: `${currentDateKey} (12:00 AM – 12:00 AM)`,
+          status: existingToday?.status === 'completed-12am' ? 'completed-12am' : 'tracking-live',
+          lastActiveAt: now.toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          }),
+        };
+
+        next[todayLogId] = updatedToday;
+
+        try {
+          localStorage.setItem(LOCAL_DAILY_USAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage quota errors
+        }
+
+        // Sync to Cloud Firestore on initial second and every 15 seconds of active screen time
+        if (nextSeconds === 1 || nextSeconds % 15 === 0) {
+          void syncUsageRecordToCloud(updatedToday);
+        }
+
+        return next;
+      });
+    };
+
+    // Initial foreground tick so the user immediately registers on the 12 AM - 12 AM board
+    tickForegroundScreenTime();
+
+    const intervalId = window.setInterval(tickForegroundScreenTime, 1000);
+
+    const handleVisibilityOrUnload = () => {
+      if (document.visibilityState === 'hidden') {
+        const currentDateKey = getLocalCycleDateKey(new Date());
+        const todayLogId = `${cleanUid}_${currentDateKey}`;
+        const currentRecord = dailyUsageMapRef.current[todayLogId];
+        if (currentRecord) {
+          void syncUsageRecordToCloud(currentRecord);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrUnload);
+    window.addEventListener('pagehide', handleVisibilityOrUnload);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityOrUnload);
+      window.removeEventListener('pagehide', handleVisibilityOrUnload);
+    };
+  }, [userSession, syncUsageRecordToCloud]);
+
+  const handleForceFinalize12AMReport = useCallback(() => {
+    if (!userSession) return;
+    const cleanUid = userSession.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+    const todayKey = getLocalCycleDateKey(new Date());
+    const logId = `${cleanUid}_${todayKey}`;
+
+    setDailyUsageMap((prev) => {
+      const existing = prev[logId];
+      if (!existing) return prev;
+      const finalized: DailyScreenTimeRecord = {
+        ...existing,
+        status: 'completed-12am',
+        lastActiveAt: `Dispatched (${new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })})`,
+      };
+      const next = { ...prev, [logId]: finalized };
+      try {
+        localStorage.setItem(LOCAL_DAILY_USAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage quota error
+      }
+      void syncUsageRecordToCloud(finalized);
+      return next;
+    });
+  }, [userSession, syncUsageRecordToCloud]);
+
   // Published Posts State (Seed + LocalStorage + Firestore, Runtime Schema Validated)
   const [posts, setPosts] = useState<EditorialPost[]>(() => {
     try {
@@ -489,7 +676,7 @@ export default function App() {
         const session: SavedUserSession = {
           uid: fbUser.uid,
           email: fbUser.email || 'user@gmail.com',
-          displayName: fbUser.displayName || fbUser.email.split('@')[0],
+          displayName: fbUser.displayName || (fbUser.email || 'user@gmail.com').split('@')[0],
           photoURL: fbUser.photoURL || '',
           whatsappNumber: cleanedWhatsapp,
           deviceInfo: `${navigator.platform || 'Web'} · ${window.innerWidth}×${window.innerHeight}`,
@@ -836,12 +1023,23 @@ export default function App() {
                   </h2>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   {userSession ? (
-                    <div className="flex items-center gap-3 bg-slate-100 px-3.5 py-2 rounded-xl text-xs">
+                    <div className="flex flex-wrap items-center gap-3 bg-slate-100 px-3.5 py-2 rounded-xl text-xs">
                       <span className="text-slate-700">
                         Signed in: <strong className="text-slate-900">{userSession.displayName}</strong> (
                         {userSession.email} · {userSession.whatsappNumber})
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200/80 text-indigo-800 font-mono-tabular font-semibold">
+                        <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>
+                          12 AM–12 AM On-Screen:{' '}
+                          {dailyUsageMap[
+                            `${userSession.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128)}_${getLocalCycleDateKey(
+                              new Date()
+                            )}`
+                          ]?.formattedDuration || '00:00:00'}
+                        </span>
                       </span>
                       <button
                         type="button"
@@ -966,6 +1164,8 @@ export default function App() {
             posts={posts}
             onPublishPost={handlePublishPost}
             onDeletePost={handleDeletePost}
+            dailyUsageLogs={Object.values(dailyUsageMap)}
+            onForceFinalize12AMReport={handleForceFinalize12AMReport}
             currentUser={
               userSession || {
                 uid: 'admin_priyam',

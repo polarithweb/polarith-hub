@@ -291,6 +291,76 @@
         }
       },
       "required": ["userId", "videoUrl", "videoTitle", "content", "createdAt", "updatedAt"]
+    },
+    "DailyUsageLog": {
+      "title": "DailyUsageLog",
+      "description": "Daily 12:00 AM to 12:00 AM (24-hour cycle) foreground active on-screen time record per user reported to the Admin Dashboard.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User full display name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User Gmail address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "whatsappNumber": {
+          "type": "string",
+          "description": "User verified WhatsApp phone number.",
+          "minLength": 7,
+          "maxLength": 20,
+          "pattern": "^\\+?[0-9]{7,15}$"
+        },
+        "dateKey": {
+          "type": "string",
+          "description": "Local 12:00 AM to 12:00 AM cycle date key (YYYY-MM-DD).",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "activeSeconds": {
+          "type": "integer",
+          "description": "Total foreground on-screen seconds accumulated during this 24-hour 12 AM to 12 AM cycle.",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "formattedDuration": {
+          "type": "string",
+          "description": "Formatted HH:MM:SS on-screen time.",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "cycleWindow": {
+          "type": "string",
+          "description": "12:00 AM to 12:00 AM cycle label.",
+          "minLength": 5,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "description": "Whether the 24-hour cycle is currently tracking or completed at 12:00 AM.",
+          "enum": ["tracking-live", "completed-12am"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when screen time was synced."
+        }
+      },
+      "required": ["uid", "displayName", "email", "whatsappNumber", "dateKey", "activeSeconds", "formattedDuration", "cycleWindow", "status", "updatedAt"]
     }
   },
   "firestore": {
@@ -317,6 +387,10 @@
     "/userNotes/{noteId}": {
       "schema": { "$ref": "#/entities/UserNote" },
       "description": "Private YouTube Video Note Taker documents."
+    },
+    "/dailyUsageLogs/{logId}": {
+      "schema": { "$ref": "#/entities/DailyUsageLog" },
+      "description": "Daily 12 AM to 12 AM active on-screen usage logs with user name and WhatsApp number."
     }
   }
 }

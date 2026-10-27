@@ -13,6 +13,9 @@ import {
   sanitizeCsvCell,
   generateSecureId,
   clampNumber,
+  getLocalCycleDateKey,
+  getSecondsUntilNextMidnight,
+  formatScreenTimeDuration,
 } from './toolsLogic';
 
 test('sanitizeWhatsappNumber normalizes valid phone numbers and rejects invalid strings', () => {
@@ -106,3 +109,19 @@ test('evaluateScientificOperation handles DEG/RAD trigonometry, asymptotes, and 
   assert.ok(Number.isNaN(evaluateScientificOperation('sqrt', -4)));
   assert.equal(clampNumber(999, 0, 100, 50), 100);
 });
+
+test('getLocalCycleDateKey, getSecondsUntilNextMidnight, and formatScreenTimeDuration compute 12 AM - 12 AM cycle metrics', () => {
+  const sampleDate = new Date(2026, 9, 27, 23, 59, 30); // Oct 27, 2026 23:59:30
+  assert.equal(getLocalCycleDateKey(sampleDate), '2026-10-27');
+  assert.equal(getSecondsUntilNextMidnight(sampleDate), 30);
+
+  const formatted = formatScreenTimeDuration(3665);
+  assert.equal(formatted.hhmmss, '01:01:05');
+  assert.equal(formatted.readable, '1h 1m 5s');
+  assert.equal(formatted.clampedSeconds, 3665);
+
+  const clampedMax = formatScreenTimeDuration(999999);
+  assert.equal(clampedMax.clampedSeconds, 86400);
+  assert.equal(clampedMax.hhmmss, '24:00:00');
+});
+

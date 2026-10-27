@@ -412,3 +412,51 @@ export function evaluateScientificOperation(
       return factorial(value);
   }
 }
+
+/**
+ * Returns the local calendar date key `YYYY-MM-DD` representing the current
+ * 12:00 AM to 12:00 AM (00:00:00 – 23:59:59) 24-hour cycle.
+ */
+export function getLocalCycleDateKey(date: Date = new Date()): string {
+  const d = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Calculates exact seconds remaining until the next 12:00 AM midnight rollover.
+ */
+export function getSecondsUntilNextMidnight(now: Date = new Date()): number {
+  const d = Number.isNaN(now.getTime()) ? new Date() : now;
+  const nextMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0);
+  const diffSec = Math.ceil((nextMidnight.getTime() - d.getTime()) / 1000);
+  return clampNumber(diffSec, 1, 86400, 86400);
+}
+
+/**
+ * Clamps active screen seconds within a 24-hour cycle [0, 86400] and formats
+ * both `HH:MM:SS` and human-readable `Xh Ym Zs`.
+ */
+export function formatScreenTimeDuration(totalSeconds: number): {
+  hhmmss: string;
+  readable: string;
+  clampedSeconds: number;
+} {
+  const clampedSeconds = Math.floor(clampNumber(totalSeconds, 0, 86400, 0));
+  const hrs = Math.floor(clampedSeconds / 3600);
+  const mins = Math.floor((clampedSeconds % 3600) / 60);
+  const secs = clampedSeconds % 60;
+
+  const hhmmss = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  let readable = `${secs}s`;
+  if (hrs > 0) {
+    readable = `${hrs}h ${mins}m ${secs}s`;
+  } else if (mins > 0) {
+    readable = `${mins}m ${secs}s`;
+  }
+
+  return { hhmmss, readable, clampedSeconds };
+}
+

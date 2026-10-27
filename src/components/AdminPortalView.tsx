@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   Download,
   Shield,
+  Clock,
+  Eye,
 } from 'lucide-react';
 import {
   collection,
@@ -35,9 +37,29 @@ import {
   sanitizeSafeImageUrl,
   sanitizeCsvCell,
   extractYouTubeId,
+  getLocalCycleDateKey,
+  getSecondsUntilNextMidnight,
+  formatScreenTimeDuration,
 } from '../utils/toolsLogic';
 
 export const LOCAL_USERS_REGISTRY_KEY = 'polarith_all_device_logins_v1';
+export const LOCAL_DAILY_USAGE_KEY = 'polarith_daily_screen_time_v1';
+
+export interface DailyScreenTimeRecord {
+  logId: string;
+  uid: string;
+  displayName: string;
+  email: string;
+  whatsappNumber: string;
+  dateKey: string;
+  activeSeconds: number;
+  formattedDuration: string;
+  readableDuration: string;
+  cycleWindow: string;
+  status: 'tracking-live' | 'completed-12am';
+  lastActiveAt: string;
+}
+
 const ALLOWED_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const MAX_IMAGE_FILE_BYTES = 220 * 1024; // 220 KB raw -> ~295 KB Base64 (< 350 KB Firestore limit)
 
@@ -46,6 +68,8 @@ interface AdminPortalViewProps {
   onPublishPost: (post: EditorialPost) => void;
   onDeletePost: (postId: string) => void;
   currentUser: SavedUserSession;
+  dailyUsageLogs?: DailyScreenTimeRecord[];
+  onForceFinalize12AMReport?: () => void;
 }
 
 export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
@@ -53,8 +77,10 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   onPublishPost,
   onDeletePost,
   currentUser,
+  dailyUsageLogs = [],
+  onForceFinalize12AMReport,
 }) => {
-  const [adminTab, setAdminTab] = useState<'publish' | 'cinema-chat' | 'users'>('publish');
+  const [adminTab, setAdminTab] = useState<'publish' | 'cinema-chat' | 'users' | 'screen-time'>('publish');
 
   // 1. Publish Blog / Vlog & Image State
   const [title, setTitle] = useState('');
@@ -79,6 +105,13 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   const [replyStatus, setReplyStatus] = useState<string | null>(null);
   const [replyError, setReplyError] = useState<string | null>(null);
 
+  // 4. Daily 12 AM - 12 AM Screen Time Reports State (Cloud + Local Merged)
+  const [cloudUsageLogs, setCloudUsageLogs] = useState<DailyScreenTimeRecord[]>([]);
+  const [secondsToMidnight, setSecondsToMidnight] = useState<number>(() =>
+    getSecondsUntilNextMidnight(new Date())
+  );
+  const [snapshotStatus, setSnapshotStatus] = useState<string | null>(null);
+
   const isAuthorizedAdminSession =
     currentUser.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase() ||
     auth.currentUser?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
@@ -87,7 +120,15 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     auth.currentUser?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
     auth.currentUser?.emailVerified === true;
 
-  // Load Users Registry & Cinema Threads from LocalStorage + Firestore if verified admin
+  // Live 1-second countdown to next 12:00 AM midnight report dispatch
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSecondsToMidnight(getSecondsUntilNextMidnight(new Date()));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Load Users Registry, Cinema Threads, & Daily 12AM Screen Time Logs from LocalStorage + Firestore if verified admin
   useEffect(() => {
     try {
       const rawUsers = localStorage.getItem(LOCAL_USERS_REGISTRY_KEY);
@@ -162,9 +203,41 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
       }
     );
 
+    const unsubUsage = onSnapshot(
+      collection(db, 'dailyUsageLogs'),
+      (snap) => {
+        if (snap.empty) return;
+        const records: DailyScreenTimeRecord[] = snap.docs.map((d) => {
+          const data = d.data();
+          const sec = typeof data.activeSeconds === 'number' ? data.activeSeconds : 0;
+          const dur = formatScreenTimeDuration(sec);
+          const dateKey = String(data.dateKey || getLocalCycleDateKey(new Date()));
+          return {
+            logId: d.id,
+            uid: String(data.uid || ''),
+            displayName: String(data.displayName || 'User'),
+            email: String(data.email || ''),
+            whatsappNumber: String(data.whatsappNumber || 'Not provided'),
+            dateKey,
+            activeSeconds: dur.clampedSeconds,
+            formattedDuration: dur.hhmmss,
+            readableDuration: dur.readable,
+            cycleWindow: String(data.cycleWindow || `${dateKey} (12:00 AM – 12:00 AM)`),
+            status: data.status === 'completed-12am' ? 'completed-12am' : 'tracking-live',
+            lastActiveAt: 'Synced via Cloud',
+          };
+        });
+        setCloudUsageLogs(records);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'dailyUsageLogs');
+      }
+    );
+
     return () => {
       unsubUsers();
       unsubChats();
+      unsubUsage();
     };
   }, [currentUser, isVerifiedFirebaseAdmin]);
 
@@ -213,6 +286,31 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     );
     return () => unsub();
   }, [isVerifiedFirebaseAdmin, selectedUserId]);
+
+  // Merge local dailyUsageLogs + cloudUsageLogs, keeping highest activeSeconds per logId
+  const mergedUsageLogs: DailyScreenTimeRecord[] = React.useMemo(() => {
+    const byId = new Map<string, DailyScreenTimeRecord>();
+    for (const item of cloudUsageLogs) {
+      byId.set(item.logId, item);
+    }
+    for (const localItem of dailyUsageLogs) {
+      const existing = byId.get(localItem.logId);
+      if (
+        !existing ||
+        localItem.activeSeconds >= existing.activeSeconds ||
+        localItem.status === 'completed-12am'
+      ) {
+        byId.set(localItem.logId, localItem);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => {
+      if (a.dateKey !== b.dateKey) return b.dateKey.localeCompare(a.dateKey);
+      return b.activeSeconds - a.activeSeconds;
+    });
+  }, [cloudUsageLogs, dailyUsageLogs]);
+
+  const todayCycleKey = getLocalCycleDateKey(new Date());
+  const nextMidnightFormatted = formatScreenTimeDuration(secondsToMidnight).hhmmss;
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     setPublishError(null);
@@ -415,7 +513,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
           senderRole: 'admin',
           text: newMsg.text.slice(0, 1500),
           movieTitle: trimmedTitle.slice(0, 200),
-          movieLink: trimmedLink.slice(0, 1000),
+          movieLink: safeLink.slice(0, 1000),
           createdAt: serverTimestamp(),
         });
       } catch (err) {
@@ -435,16 +533,55 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
 
   const handleExportUsersCsv = () => {
     if (!isAuthorizedAdminSession) return;
-    const header = 'UID,Full Name,Gmail Address,WhatsApp Number,Device Info,Last Login\n';
+    const header =
+      'UID,Full Name,Gmail Address,WhatsApp Number,Today On-Screen Time (12AM-12AM),Device Info,Last Login\n';
     const rows = registeredUsers
-      .map((u) =>
-        [
+      .map((u) => {
+        const todayLog = mergedUsageLogs.find(
+          (l) => (l.uid === u.uid || l.email === u.email) && l.dateKey === todayCycleKey
+        );
+        return [
           sanitizeCsvCell(u.uid),
           sanitizeCsvCell(u.displayName),
           sanitizeCsvCell(u.email),
           sanitizeCsvCell(u.whatsappNumber || 'Not provided'),
+          sanitizeCsvCell(todayLog ? `${todayLog.formattedDuration} (${todayLog.readableDuration})` : '00:00:00'),
           sanitizeCsvCell(u.deviceInfo),
           sanitizeCsvCell(u.lastLoginAt),
+        ].join(',');
+      })
+      .join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'polarith-login-users.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportScreenTimeCsv = () => {
+    if (!isAuthorizedAdminSession) return;
+    const header =
+      'User Name,WhatsApp Number,Gmail Address,12 AM - 12 AM Cycle Date,Active On-Screen Duration (HH:MM:SS),Readable Duration,Active Seconds,12 AM Dispatch Status,Last Screen Activity\n';
+    const rows = mergedUsageLogs
+      .map((log) =>
+        [
+          sanitizeCsvCell(log.displayName),
+          sanitizeCsvCell(log.whatsappNumber),
+          sanitizeCsvCell(log.email),
+          sanitizeCsvCell(log.cycleWindow),
+          sanitizeCsvCell(log.formattedDuration),
+          sanitizeCsvCell(log.readableDuration),
+          sanitizeCsvCell(String(log.activeSeconds)),
+          sanitizeCsvCell(
+            log.status === 'completed-12am'
+              ? 'Dispatched at 12:00 AM'
+              : 'Tracking Live (Visible Screen Only)'
+          ),
+          sanitizeCsvCell(log.lastActiveAt),
         ].join(',')
       )
       .join('\n');
@@ -452,7 +589,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'polarith-login-users.csv';
+    a.download = `polarith-12am-screen-time-${todayCycleKey}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -495,7 +632,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     <div className="space-y-10">
       {/* Admin Header */}
       <section className="frosted-panel rounded-2xl p-6 sm:p-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-xs font-medium text-indigo-700 mb-1.5">
               <Shield className="w-4 h-4" />
@@ -505,11 +642,11 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
               Polarith Studio — Executive Admin Portal
             </h1>
             <p className="mt-1.5 text-sm text-slate-600">
-              Publish blogs, vlogs, and images across all site categories, dispatch movie links in Cinema Machine chats, and inspect logged-in user Gmail records.
+              Publish blogs, vlogs, and images, dispatch movie links in Cinema Machine, inspect user Gmail + WhatsApp records, and review 12:00 AM – 12:00 AM daily active on-screen time reports.
             </p>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80 shrink-0">
             <button
               type="button"
               onClick={() => setAdminTab('publish')}
@@ -533,6 +670,18 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
             >
               <MessageSquare className="w-3.5 h-3.5 text-indigo-600" />
               <span>Cinema Chat Desk</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdminTab('screen-time')}
+              className={`px-3.5 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
+                adminTab === 'screen-time'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5 text-indigo-600" />
+              <span>12 AM – 12 AM Screen Time ({mergedUsageLogs.length})</span>
             </button>
             <button
               type="button"
@@ -873,7 +1022,173 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
         </section>
       )}
 
-      {/* Tab 3: Login User Details Registry */}
+      {/* Tab 3: 12:00 AM to 12:00 AM (24-Hour Cycle) Daily Active On-Screen Time Reports */}
+      {adminTab === 'screen-time' && (
+        <section className="frosted-panel rounded-2xl p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-xs font-semibold text-indigo-700">
+                <Eye className="w-3.5 h-3.5" />
+                <span>FOREGROUND ON-SCREEN TELEMETRY · PAUSES IN BACKGROUND TABS</span>
+              </div>
+              <h2 className="text-lg sm:text-xl font-serif-display font-semibold text-slate-900">
+                Daily 12:00 AM to 12:00 AM (24-Hour Cycle) User Screen-Time Reports
+              </h2>
+              <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
+                Tracks each signed-in user's exact active on-screen time (`document.visibilityState === 'visible'`) between 12:00 AM and 12:00 AM. At 12:00 AM midnight, the 24-hour cycle finalizes and delivers the user's Name, WhatsApp Number, and total on-screen duration here.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 self-start">
+              {onForceFinalize12AMReport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onForceFinalize12AMReport();
+                    setSnapshotStatus(
+                      `12:00 AM cycle report snapshot locked & synced at ${new Date().toLocaleTimeString()}.`
+                    );
+                  }}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Dispatch 12 AM Report Snapshot Now</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleExportScreenTimeCsv}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export 12 AM Screen Time CSV</span>
+              </button>
+            </div>
+          </div>
+
+          {snapshotStatus && (
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{snapshotStatus}</span>
+            </div>
+          )}
+
+          {/* 24-Hour Cycle Status Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-4 rounded-xl bg-white/85 border border-slate-200/80 space-y-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                Active 24-Hour Cycle Window
+              </span>
+              <p className="text-base font-mono-tabular font-semibold text-slate-900">
+                {todayCycleKey} · 12:00 AM – 12:00 AM
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Resets automatically at 00:00:00 local midnight
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-white/85 border border-slate-200/80 space-y-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                Next 12:00 AM Report Rollover In
+              </span>
+              <p className="text-base font-mono-tabular font-semibold text-indigo-700">
+                {nextMidnightFormatted}
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Auto-dispatches completed 24h log at 12:00 AM
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-white/85 border border-slate-200/80 space-y-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                Measurement Rule
+              </span>
+              <p className="text-base font-semibold text-emerald-700">
+                On-Screen Visible Only
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Timer pauses immediately if tab is in background or minimized
+              </p>
+            </div>
+          </div>
+
+          {/* 12 AM Screen Time Table with User Name & WhatsApp Number */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="py-3 pr-4 font-medium">User Name</th>
+                  <th className="py-3 px-4 font-medium">WhatsApp Number</th>
+                  <th className="py-3 px-4 font-medium">Gmail Address</th>
+                  <th className="py-3 px-4 font-medium">12 AM – 12 AM Cycle Window</th>
+                  <th className="py-3 px-4 font-medium">Active On-Screen Time</th>
+                  <th className="py-3 px-4 font-medium">12:00 AM Dispatch Status</th>
+                  <th className="py-3 pl-4 font-medium">Last Active On-Screen</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200/60 text-slate-700">
+                {mergedUsageLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-slate-500">
+                      No active screen-time logs recorded yet. As users view the website on-screen, their 12 AM – 12 AM timer updates live here.
+                    </td>
+                  </tr>
+                ) : (
+                  mergedUsageLogs.map((log) => (
+                    <tr key={log.logId} className="hover:bg-white/60">
+                      <td className="py-3.5 pr-4 font-semibold text-slate-900">
+                        {log.displayName}
+                      </td>
+                      <td className="py-3.5 px-4 font-mono-tabular font-semibold text-emerald-700">
+                        <a
+                          href={`https://wa.me/${log.whatsappNumber.replace(/[^0-9]/g, '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline"
+                        >
+                          {log.whatsappNumber}
+                        </a>
+                      </td>
+                      <td className="py-3.5 px-4 font-mono-tabular text-indigo-700">
+                        {log.email}
+                      </td>
+                      <td className="py-3.5 px-4 font-mono-tabular text-slate-700">
+                        {log.cycleWindow}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="font-mono-tabular font-semibold text-slate-900 text-sm">
+                          {log.formattedDuration}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {log.readableDuration} ({log.activeSeconds}s on-screen)
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        {log.status === 'completed-12am' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-medium text-[11px]">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Dispatched at 12:00 AM</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-800 font-medium text-[11px]">
+                            <Clock className="w-3 h-3" />
+                            <span>Tracking Live (12 AM – 12 AM)</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 pl-4 font-mono-tabular text-slate-500">
+                        {log.lastActiveAt}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Tab 4: Login User Details Registry */}
       {adminTab === 'users' && (
         <section className="frosted-panel rounded-2xl p-6 sm:p-8 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
@@ -882,7 +1197,7 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
                 Logged-In User Details & Device Registry
               </h2>
               <p className="text-xs text-slate-500">
-                Complete audit log of users who signed in with Gmail and saved their session details.
+                Complete audit log of users who signed in with Gmail, their verified WhatsApp number, and today's 12 AM – 12 AM active on-screen time.
               </p>
             </div>
             <button
@@ -902,26 +1217,37 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
                   <th className="py-3 pr-4 font-medium">User Name</th>
                   <th className="py-3 px-4 font-medium">Gmail Address</th>
                   <th className="py-3 px-4 font-medium">WhatsApp Number</th>
+                  <th className="py-3 px-4 font-medium">Today's On-Screen Time (12 AM–12 AM)</th>
                   <th className="py-3 px-4 font-medium">Auth Method</th>
                   <th className="py-3 px-4 font-medium">Device & Platform Telemetry</th>
                   <th className="py-3 pl-4 font-medium">Last Login</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60 text-slate-700">
-                {registeredUsers.map((u) => (
-                  <tr key={u.uid} className="hover:bg-white/50">
-                    <td className="py-3 pr-4 font-semibold text-slate-900">{u.displayName}</td>
-                    <td className="py-3 px-4 font-mono-tabular text-indigo-700">{u.email}</td>
-                    <td className="py-3 px-4 font-mono-tabular font-medium text-emerald-700">
-                      {u.whatsappNumber || 'Not provided'}
-                    </td>
-                    <td className="py-3 px-4">{u.authMethod}</td>
-                    <td className="py-3 px-4 font-mono-tabular text-slate-500 max-w-xs truncate">
-                      {u.deviceInfo}
-                    </td>
-                    <td className="py-3 pl-4 font-mono-tabular text-slate-500">{u.lastLoginAt}</td>
-                  </tr>
-                ))}
+                {registeredUsers.map((u) => {
+                  const todayLog = mergedUsageLogs.find(
+                    (l) => (l.uid === u.uid || l.email === u.email) && l.dateKey === todayCycleKey
+                  );
+                  return (
+                    <tr key={u.uid} className="hover:bg-white/50">
+                      <td className="py-3 pr-4 font-semibold text-slate-900">{u.displayName}</td>
+                      <td className="py-3 px-4 font-mono-tabular text-indigo-700">{u.email}</td>
+                      <td className="py-3 px-4 font-mono-tabular font-medium text-emerald-700">
+                        {u.whatsappNumber || 'Not provided'}
+                      </td>
+                      <td className="py-3 px-4 font-mono-tabular font-semibold text-slate-900">
+                        {todayLog
+                          ? `${todayLog.formattedDuration} (${todayLog.readableDuration})`
+                          : '00:00:00 (0s)'}
+                      </td>
+                      <td className="py-3 px-4">{u.authMethod}</td>
+                      <td className="py-3 px-4 font-mono-tabular text-slate-500 max-w-xs truncate">
+                        {u.deviceInfo}
+                      </td>
+                      <td className="py-3 pl-4 font-mono-tabular text-slate-500">{u.lastLoginAt}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -930,3 +1256,4 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
     </div>
   );
 };
+
